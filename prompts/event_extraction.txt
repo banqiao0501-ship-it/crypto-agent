@@ -1,0 +1,33 @@
+你是事件去重助手。下面提供一批原始資料（新聞快訊、YouTube影片逐字稿摘要），裡面可能有多筆
+內容其實在講同一件事（例如：Jin10快訊報導了Fed官員發言，某個KOL的影片裡也提到同一件事）。
+
+你的任務：把這些內容依照「談論的是不是同一件事」分組，合併成一個個「事件」。
+
+規則：
+- 判斷標準是「事件本身」，不是「幣種」——如果兩則內容都在講「Fed暗示降息」，即使一則只提到BTC、
+  另一則同時提到BTC和ETH，還是算同一個事件，因為兩者都是「Fed降息」這件事的不同影響面。
+- 不要過度合併。只有真的在描述同一件具體事情時才合併，「大盤普遍偏多」這種模糊的共同氣氛不算同一事件。
+- 每一則原始資料都要被分到至少一個事件裡（如果某則內容自成一個獨立事件，就單獨成一組，不用勉強跟別的合併）。
+- summary要客觀描述「發生了什麼」，不要加入你自己的推測或分析。
+- sentiment是這件事本身對市場的傾向（bullish/bearish/neutral），不是你對整體大盤的看法。
+- 輸出必須是純JSON，不要加```json框、不要加任何JSON以外的文字。
+
+=== 原始資料（每則前面的[數字]是編號，source_indices要用這個編號）===
+{indexed_contents}
+
+請輸出：
+
+{{
+  "events": [
+    {{
+      "event_key": "簡短英文slug，例如 FED_RATE_CUT_SIGNAL",
+      "title": "一句話標題",
+      "summary": "2~4句話描述這件事，客觀陳述",
+      "category": "macro|regulation|hack|onchain|protocol|market_structure|exchange|other",
+      "impact": "high|medium|low",
+      "sentiment": "bullish|bearish|neutral",
+      "related_assets": ["這件事影響到的幣種代號，例如BTC、ETH，找不到明確關聯就留空陣列"],
+      "source_indices": [這個事件是由原始資料裡哪幾個編號的內容組成的，例如 [0, 3, 7]]
+    }}
+  ]
+}}

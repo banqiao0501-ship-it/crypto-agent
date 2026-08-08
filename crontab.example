@@ -1,0 +1,21 @@
+# crypto-agent 排程建議
+# 使用方式：
+#   1. 把下面路徑改成你實際的專案路徑跟python執行檔路徑（建議用虛擬環境的python）
+#   2. crontab -e，把改好的內容貼進去
+#
+# 查你的虛擬環境python路徑：在專案資料夾下 source venv/bin/activate 後執行 `which python`
+
+PROJECT_DIR=/home/youruser/crypto-agent
+PYTHON=/home/youruser/crypto-agent/venv/bin/python
+
+# YouTube逐字稿收集：頻道多在晚間發片，一天檢查3次
+0 21,22,23 * * * cd $PROJECT_DIR && $PYTHON -m app.main collect-youtube >> logs/cron.log 2>&1
+
+# jin10快訊收集：即時新聞牆，30分鐘一次
+*/30 * * * * cd $PROJECT_DIR && $PYTHON -m app.main collect-jin10 >> logs/cron.log 2>&1
+
+# 市場數據+技術指標+規則引擎告警檢查：30分鐘一次，才能較即時抓到價格異常
+*/30 * * * * cd $PROJECT_DIR && $PYTHON -m app.main market-check >> logs/cron.log 2>&1
+
+# 每日總結報告：每天早上8點推播
+0 8 * * * cd $PROJECT_DIR && $PYTHON -m app.main daily-report >> logs/cron.log 2>&1
