@@ -1,9 +1,9 @@
-# Crypto Intelligence Agent (V1+V2)
+# Crypto Intelligence Agent（V0+V1）
 
 抓取YouTube幣圈KOL逐字稿 + jin10快訊 + CoinGecko現貨數據 + Binance/Bybit衍生品數據，
 用Claude彙整成消息面+技術面的每日報告，並在偵測到價格異常時即時推播，透過LINE通知。
 
-## 這個版本包含什麼（V1）
+## 這個版本包含什麼（V0+V1範圍）
 
 - YouTube逐字稿收集（不需要YouTube API key）
 - jin10快訊收集，並過濾出加密貨幣相關項目
@@ -12,8 +12,19 @@
 - 衍生品數據（Funding Rate / Open Interest）：BingX優先（使用者實際交易所），抓不到才降級用Binance、再降級用Bybit
 - 規則引擎：價格劇烈波動（1h±3% / 4h±5%）、RSI極端值（>75 或 <25），觸發後才呼叫AI解讀
 - Claude彙整每日報告，輸出Market Bias（短/中/長線）而非買賣建議
-- LINE推播：每日固定報告 + 即時異常警報
+- LINE推播：每日固定報告（精簡宏觀版） + 即時異常警報 + YouTube新影片即時摘要通知
+- **幣種查詢功能（新）**：每日推播不再一次塞8個幣種的完整分析，改成只顯示Market Regime、
+  市場總覽、關鍵事件、BTC/ETH簡短概況。想看特定幣種完整分析（消息面/技術面/Market Bias/風險/
+  來源），直接在LINE對話框打幣種代號（例如打「SOL」）即可查詢。這個功能需要另外部署一個
+  獨立的webhook服務，設定步驟見`../webhook-service/README.md`（是同一個交付物裡的另一個資料夾）。
+  沒有部署這個服務也完全不影響其他功能，`WEBHOOK_SYNC_URL`留空就會自動跳過同步。
+- YouTube新影片：偵測到新影片時，會立刻對這支影片做摘要並推播LINE通知（格式：頻道發布了什麼影片
+  +幾條重點摘要），不用等到隔天日報。原始逐字稿一樣會存進資料庫，隔天8點日報依然會把它納入
+  Event Clustering一起統整，即時通知跟每日彙整是兩件互不影響的事。
 - 系統健康狀態會附在每日報告最後，方便你知道有沒有哪個collector掛了
+
+**沒有做的（照之前討論，先留到之後）**：自動發掘新幣種、Event Clustering跨來源去重、
+Source Reliability加權判斷、coinglass/followin.io（瀏覽器自動化）、SMC/交易結構分析。
 
 ## V2進度
 
@@ -28,6 +39,7 @@
   官方/財經媒體較高、KOL較低）加總（封頂1.0）算出一個可信度分數，分數越高代表可信度越高
   或有越多獨立來源互相證實。分數會附在事件資料裡一起給AI，並在prompt裡明確要求AI對
   低可信度（僅單一低可信度來源）的事件降低權重、標註「僅單一來源」，不要讓它主導market_bias判斷。
+- ⬜ coinglass/followin.io：尚未開始（backlog裡最後一塊，需要瀏覽器自動化）
 
 ## 安裝
 
@@ -88,5 +100,16 @@ python -m app.main daily-report     # 測試完整每日報告產生+推播，�
    去 https://bingx-api.github.io/docs/#/swapV2/introduce 對一下目前的實際欄位名稱，
    反正失敗時程式會自動降級用Binance/Bybit，不會讓整個流程掛掉。
 
+6. **YouTube Shorts判斷**：用的是非官方技巧（HEAD打`youtube.com/shorts/{id}`，200代表是Shorts），
+   YouTube沒有正式保證這個行為，未來可能失效。失效時程式會保守判斷成「不是Shorts」（照樣抓逐字稿，
+   不會誤刪正常影片），頂多是Shorts又跑回來而已，不影響穩定性。如果之後發現Shorts又混進報告裡了，
+   代表這個技巧失效，需要回來調整`app/collectors/youtube.py`的`is_short()`函式。
+
 其他部分（資料庫schema、技術指標計算、規則引擎邏輯、AI prompt、專案結構）都是可以直接
 運作的完整邏輯，不是佔位符。
+
+## 之後可以加的東西（backlog，先不用管）
+
+Event Clustering、Source Reliability加權、Market Regime Detection、coinglass/followin.io
+（需要Playwright瀏覽器自動化）、SMC/交易結構分析——這些等V0+V1穩定運作一陣子之後，
+有需要再回來加。

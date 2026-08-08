@@ -247,6 +247,32 @@ def generate_daily_report(
     return report
 
 
+_YOUTUBE_TRANSCRIPT_MAX_CHARS = 8000  # 即時摘要用，比日報的_MAX_CONTENT_CHARS更小，讓即時推播更快回來
+
+
+def summarize_youtube_video(settings: Settings, title: str, transcript: str) -> list[str]:
+    """對單一支新影片做即時摘要，回傳幾條重點（不做事件去重、不管其他來源，就是單支影片的重點整理）。
+    給YouTube collector偵測到新影片時即時推播用，跟每日報告的彙整邏輯是分開的兩件事。"""
+    content = transcript
+    if len(content) > _YOUTUBE_TRANSCRIPT_MAX_CHARS:
+        content = content[:_YOUTUBE_TRANSCRIPT_MAX_CHARS] + "...(內容過長，已截斷)"
+
+    template = _load_prompt_template("youtube_summary.txt")
+    prompt = template.format(title=title, transcript=content)
+
+    logger.info("呼叫Claude即時摘要新影片：%s", title)
+    raw_response = _call_claude(settings.anthropic_api_key, prompt, max_tokens=1500)
+
+    try:
+        parsed = _parse_json_response(raw_response)
+    except json.JSONDecodeError as exc:
+        debug_path = _save_debug_response(raw_response, "youtube_summary")
+        logger.error("影片摘要AI回應無法解析成JSON：%s\n完整原始回應已存到：%s", exc, debug_path)
+        raise
+
+    return parsed.get("bullets", [])
+
+
 def generate_alert_analysis(
     conn: sqlite3.Connection,
     settings: Settings,

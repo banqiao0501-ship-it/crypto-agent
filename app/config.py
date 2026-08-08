@@ -90,6 +90,8 @@ class Settings:
     database_path: Path
     log_level: str
     log_path: Path
+    webhook_sync_url: str
+    webhook_sync_secret: str
     assets: list[Asset] = field(default_factory=lambda: ASSETS)
     youtube_channels: list[YoutubeChannel] = field(default_factory=lambda: YOUTUBE_CHANNELS)
 
@@ -104,4 +106,6 @@ def load_settings() -> Settings:
         database_path=BASE_DIR / _optional("DATABASE_PATH", "data/crypto.db"),
         log_level=_optional("LOG_LEVEL", "INFO"),
         log_path=BASE_DIR / _optional("LOG_PATH", "logs/crypto-agent.log"),
+        webhook_sync_url=_optional("WEBHOOK_SYNC_URL"),
+        webhook_sync_secret=_optional("WEBHOOK_SYNC_SECRET"),
     )

@@ -58,10 +58,23 @@ def _run_market_and_technical(conn, settings: Settings, status: dict[str, bool])
 def cmd_collect_youtube(settings: Settings) -> None:
     with db.get_connection(settings.database_path) as conn:
         try:
-            count = youtube.collect(conn, settings.youtube_channels)
+            count, new_videos = youtube.collect(conn, settings.youtube_channels)
             logger.info("YouTube collector完成，新增%d筆", count)
         except Exception:
             logger.exception("YouTube collector發生錯誤")
+            return
+
+        for video in new_videos:
+            try:
+                bullets = synthesizer.summarize_youtube_video(settings, video["title"], video["transcript"])
+                text = line.format_youtube_notification(
+                    video["channel_name"], video["title"], video["url"], bullets,
+                )
+                line.push_text(settings.line_channel_access_token, settings.line_user_id, text)
+            except Exception:
+                # 即時摘要/推播失敗不影響資料已經存進DB這件事——隔天8點日報一樣會統整到這支影片，
+                # 只是少了這次的即時通知，不算嚴重錯誤，記log就好，不用中斷整個collector。
+                logger.exception("影片即時摘要/推播失敗：%s", video.get("title"))
 
 
 def cmd_collect_jin10(settings: Settings) -> None:
@@ -120,6 +133,9 @@ def cmd_daily_report(settings: Settings) -> None:
         except Exception:
             logger.exception("每日報告LINE推播失敗")
             sent_at = None
+
+        sync_payload = line.build_sync_payload(report, settings.assets, report_date)
+        line.sync_to_webhook(settings.webhook_sync_url, settings.webhook_sync_secret, sync_payload)
 
         import json
 

@@ -164,9 +164,13 @@ def fetch_transcript(video_id: str) -> str | None:
         return None
 
 
-def collect(conn: sqlite3.Connection, channels: list[YoutubeChannel]) -> int:
-    """主入口：對每個頻道抓最新影片，新影片才抓逐字稿並存進DB。回傳這次新增的筆數。"""
+def collect(conn: sqlite3.Connection, channels: list[YoutubeChannel]) -> tuple[int, list[dict]]:
+    """主入口：對每個頻道抓最新影片，新影片才抓逐字稿並存進DB。
+    回傳 (這次新增的筆數, 新增影片的清單)——清單是給main.py拿去做「即時摘要推播」用的，
+    每個元素包含channel_name/title/url/transcript，跟資料庫脫鉤，呼叫端不用另外查DB。
+    """
     new_count = 0
+    new_videos: list[dict] = []
     now_iso = datetime.now(timezone.utc).isoformat()
 
     with httpx.Client() as client:
@@ -216,5 +220,11 @@ def collect(conn: sqlite3.Connection, channels: list[YoutubeChannel]) -> int:
                 if inserted:
                     new_count += 1
                     logger.info("新影片入庫：%s - %s", channel.name, video.title)
+                    new_videos.append({
+                        "channel_name": channel.name,
+                        "title": video.title,
+                        "url": video.url,
+                        "transcript": transcript,
+                    })
 
-    return new_count
+    return new_count, new_videos
