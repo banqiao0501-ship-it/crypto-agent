@@ -1,9 +1,9 @@
-# Crypto Intelligence Agent（V0+V1）
+# Crypto Intelligence Agent (V1+V2)
 
 抓取YouTube幣圈KOL逐字稿 + jin10快訊 + CoinGecko現貨數據 + Binance/Bybit衍生品數據，
 用Claude彙整成消息面+技術面的每日報告，並在偵測到價格異常時即時推播，透過LINE通知。
 
-## 這個版本包含什麼（V0+V1範圍）
+## 這個版本包含什麼（V1）
 
 - YouTube逐字稿收集（不需要YouTube API key）
 - jin10快訊收集，並過濾出加密貨幣相關項目
@@ -14,9 +14,6 @@
 - Claude彙整每日報告，輸出Market Bias（短/中/長線）而非買賣建議
 - LINE推播：每日固定報告 + 即時異常警報
 - 系統健康狀態會附在每日報告最後，方便你知道有沒有哪個collector掛了
-
-**沒有做的（照之前討論，先留到之後）**：自動發掘新幣種、Event Clustering跨來源去重、
-Source Reliability加權判斷、coinglass/followin.io（瀏覽器自動化）、SMC/交易結構分析。
 
 ## V2進度
 
@@ -31,7 +28,6 @@ Source Reliability加權判斷、coinglass/followin.io（瀏覽器自動化）�
   官方/財經媒體較高、KOL較低）加總（封頂1.0）算出一個可信度分數，分數越高代表可信度越高
   或有越多獨立來源互相證實。分數會附在事件資料裡一起給AI，並在prompt裡明確要求AI對
   低可信度（僅單一低可信度來源）的事件降低權重、標註「僅單一來源」，不要讓它主導market_bias判斷。
-- ⬜ coinglass/followin.io：尚未開始（backlog裡最後一塊，需要瀏覽器自動化）
 
 ## 安裝
 
@@ -94,9 +90,3 @@ python -m app.main daily-report     # 測試完整每日報告產生+推播，�
 
 其他部分（資料庫schema、技術指標計算、規則引擎邏輯、AI prompt、專案結構）都是可以直接
 運作的完整邏輯，不是佔位符。
-
-## 之後可以加的東西（backlog，先不用管）
-
-Event Clustering、Source Reliability加權、Market Regime Detection、coinglass/followin.io
-（需要Playwright瀏覽器自動化）、SMC/交易結構分析——這些等V0+V1穩定運作一陣子之後，
-有需要再回來加。
