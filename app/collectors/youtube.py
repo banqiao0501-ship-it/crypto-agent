@@ -115,6 +115,25 @@ def fetch_latest_videos(channel_id: str, client: httpx.Client, max_results: int 
     return videos
 
 
+def is_short(video_id: str, client: httpx.Client) -> bool:
+    """判斷這支影片是不是YouTube Shorts。
+
+    YouTube沒有官方API可以直接查這件事，這裡用一個常見的非官方技巧：
+    對 youtube.com/shorts/{id} 發HEAD請求，回應200代表是Shorts、303轉址代表是一般影片。
+    這不是官方保證的行為，YouTube改版有可能讓它失效——失效或請求出錯時，
+    保守判斷成「不是Shorts」（寧可多抓一支，也不要誤刪正常影片）。
+    """
+    try:
+        resp = client.head(
+            f"https://www.youtube.com/shorts/{video_id}",
+            headers=_HEADERS, follow_redirects=False, timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception as exc:  # noqa: BLE001
+        logger.info("判斷影片 %s 是否為Shorts時發生錯誤，保守當作不是Shorts：%s", video_id, exc)
+        return False
+
+
 def fetch_transcript(video_id: str) -> str | None:
     """抓逐字稿，優先中文，抓不到就退而求其次抓英文或自動翻譯。抓不到就回傳None（不要讓整個collector中斷）。
 
@@ -176,6 +195,10 @@ def collect(conn: sqlite3.Connection, channels: list[YoutubeChannel]) -> int:
                 continue
 
             for video in videos:
+                if is_short(video.video_id, client):
+                    logger.info("影片 %s（%s）是Shorts，略過不處理", video.video_id, video.title)
+                    continue
+
                 transcript = fetch_transcript(video.video_id)
                 if transcript is None:
                     continue
