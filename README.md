@@ -41,6 +41,56 @@ Source Reliability加權判斷、coinglass/followin.io（瀏覽器自動化）�
   低可信度（僅單一低可信度來源）的事件降低權重、標註「僅單一來源」，不要讓它主導market_bias判斷。
 - ⬜ coinglass/followin.io：尚未開始（backlog裡最後一塊，需要瀏覽器自動化）
 
+## P0：資料基礎修正（已完成）
+
+- ✅ **技術分析改用BingX Kline**：不再用CoinGecko價格點模擬OHLC，`app/collectors/market.py`
+  直接抓BingX原生K線（1h/4h/1d），`technical.py`/`event_detector.py`/`market_regime.py`都改吃
+  真實OHLCV，支撐壓力可以用真正的high/low算，比之前只能用close價位準確
+- ✅ **BingX完整儲存**：`derivative_snapshots`新增mark_price、index_price；新增
+  `market_context_snapshots`存CoinGecko的市值/排名/流通量。CoinGecko重新定位成「市場背景資料」
+  （不再影響技術分析），AI寫日報時會同時看到BingX交易數據跟CoinGecko背景資料
+- ✅ **資料品質驗證**：新增`app/analysis/data_quality.py`，檢查K棒OHLC內部一致性、時間戳
+  重複/缺口、衍生品數據異常值，接在BingX Kline抓取之後，髒資料不會流進技術指標計算
+- ✅ **時區統一**：新增`app/utils/timeutil.py`，`report_date`等「今天」的判斷改用台北時間
+  明確計算，不再依賴作業系統本地時區（`date.today()`已從整個專案移除）
+
+## P1：提高情報價值（已完成）
+
+- ✅ **P1-3 MACD/ATR/Volume Ratio**：`technical.py`新增這三個指標，跟RSI/EMA一起存進
+  `technical_snapshots`。ATR現在可以用真實high/low算（P0已經改用BingX真實K棒），Volume Ratio
+  是目前這根K棒volume相對前20根平均的倍數。
+- ✅ **P1-2 異常分數**：新增`app/analysis/anomaly.py`，把OI變化（4小時內）、funding rate、
+  volume ratio三個訊號各自門檻計分後加總成一個分數，deterministic計算、不靠AI判斷。
+- ✅ **P1-4 Alert Engine升級**：`event_detector.py`新增第三條規則——異常分數達到門檻
+  （目前設4分）就觸發`derivatives_anomaly`告警，就算價格本身還沒明顯波動，衍生品市場的
+  異常行為（OI悄悄堆積、funding偏離、成交量放大）也能提早示警。
+- ✅ **P1-1 Event → Market Reaction**：新增`app/analysis/event_reactions.py`，每個事件建立
+  後會自動追蹤5m（僅重大事件）/15m/1h/4h/24h五個時間窗，用事件發生前60分鐘的價格變化當
+  baseline，扣除既有趨勢後算出「真正歸因給事件的反應」（excess_return）。採用
+  event-driven排程：不是每個事件建一個cron，而是建立輕量的`reaction_jobs`紀錄，
+  `market-check`跟`daily-report`每次執行時順便掃描有沒有到期的任務來結算，就算累積上百個
+  事件也不會失控。全部計算都是deterministic，AI只在每日報告階段負責解讀已經算好的數字，
+  半年後累積夠多資料，就能開始統計「這類事件過去市場通常怎麼反應」。
+
+## P2：提高AI品質（進行中）
+
+- ✅ **P2-1 YouTube Transcript → Structured Claim Extraction**：`extract_youtube_claims`
+  取代原本的`summarize_youtube_video`，除了給即時推播用的bullets，還會把逐字稿裡跟特定
+  幣種有關的具體觀點拆成結構化claim（幣種、claim_type、方向、時間框架、進場區間/停損/目標價、
+  是否可驗證），存進新增的`kol_claims`表。其中`verifiable=true`且有明確`time_horizon`的，
+  另外存一筆進`kol_predictions`（`prediction_time`固定用影片發布時間，不是抓取時間，避免
+  look-ahead bias）。
+- ✅ **P2-2 KOL Prediction Tracking**：新增`app/analysis/prediction_evaluation.py`。ATR-normalized
+  threshold V1設計：threshold在prediction**建立當下**就凍結（用該幣種當時的ATR/當時價格），
+  不會因為之後波動變大變小而跟著變，避免look-ahead bias。ATR的timeframe依horizon自動選
+  （3天內的短天期預測用4h ATR，更長的用1d ATR）。分兩套評估邏輯：沒有明確target的
+  Direction預測用±threshold三區間（CORRECT/INCORRECT/INCONCLUSIVE）；有明確target的
+  Target預測直接判斷horizon內有沒有觸價，沒觸價但方向對且幅度夠大則是PARTIAL。
+  `market-check`/`daily-report`每次執行時掃描到期的prediction自動結算，全程deterministic。
+- ⬜ **P2-3 Evidence Independence**：尚未開始
+- ⬜ **P2-4 Narrative Tracking**：尚未開始（`kol_claims`已經有`claim_type=narrative`這個
+  分類可以用，之後做這塊時可以直接查這個欄位）
+
 ## 安裝
 
 ```bash
@@ -87,23 +137,32 @@ python -m app.main daily-report     # 測試完整每日報告產生+推播，�
    持續失敗，先確認套件版本是不是最新的（`pip install -U youtube-transcript-api`），
    再去它的GitHub issue頁面查最新狀況。
 
-3. **CoinGecko免費/Demo方案的interval規則**：我是照官方文件的一般規則寫的（days<=90自動
-   給hourly顆粒度），但這類免費方案的細節條款不時會調整，如果 `market-check` 抓到的價格
-   序列數量跟預期差很多，去CoinGecko API文件對一下目前規則。
+3. **CoinGecko改為只負責市場背景資料**（Market Cap/排名/流通量），不再用於技術分析。
+   如果 `market-check` log顯示CoinGecko抓取失敗，不影響技術指標計算（那已經完全改用BingX），
+   只是每日報告裡會少一段市值脈絡資訊。
 
 4. **LINE免費額度**：文件上寫「輕用量」方案每月200~500則免費，這個數字不同資訊來源寫的
    不完全一樣，正式跑之前建議去LINE Developers Console的帳單頁面確認一次目前的方案內容。
 
 5. **BingX的衍生品數據端點**：`/openApi/swap/v2/quote/premiumIndex`跟`/openApi/swap/v2/quote/openInterest`
-   這兩個端點的回應欄位名稱（`lastFundingRate`、`openInterest`）是照BingX官方文件寫的，但因為
-   我這邊沒辦法連網路實際呼叫測試，如果`market-check`跑起來log顯示BingX抓取失敗，
-   去 https://bingx-api.github.io/docs/#/swapV2/introduce 對一下目前的實際欄位名稱，
+   這兩個端點的回應欄位名稱（`lastFundingRate`、`markPrice`、`indexPrice`、`openInterest`）是照
+   BingX官方文件寫的，但因為我這邊沒辦法連網路實際呼叫測試，如果`market-check`跑起來log顯示
+   BingX抓取失敗，去 https://bingx-api.github.io/docs/#/swapV2/introduce 對一下目前的實際欄位名稱，
    反正失敗時程式會自動降級用Binance/Bybit，不會讓整個流程掛掉。
 
 6. **YouTube Shorts判斷**：用的是非官方技巧（HEAD打`youtube.com/shorts/{id}`，200代表是Shorts），
    YouTube沒有正式保證這個行為，未來可能失效。失效時程式會保守判斷成「不是Shorts」（照樣抓逐字稿，
    不會誤刪正常影片），頂多是Shorts又跑回來而已，不影響穩定性。如果之後發現Shorts又混進報告裡了，
    代表這個技巧失效，需要回來調整`app/collectors/youtube.py`的`is_short()`函式。
+
+7. **BingX Kline端點（P0新增，風險等級較高）**：`app/collectors/market.py`的
+   `/openApi/swap/v3/quote/klines`這個端點路徑，我沒辦法連網跟官方動態文件核對，是照第三方
+   SDK原始碼交叉比對寫的，**確定性比其他BingX端點低**。`_parse_bingx_kline_item()`已經寫成
+   同時支援「陣列包陣列」跟「陣列包物件」兩種可能格式，且P0-3新增的資料品質驗證層
+   （`app/analysis/data_quality.py`）會攔住格式不對的髒資料。如果`market-check`跑完後
+   技術指標全部是空的，先看log裡有沒有「K線抓取失敗」或驗證警告，去
+   https://bingx-api.github.io/docs-v3/#/en/Swap/Market%20Data/Kline/Candlestick%20Data
+   對一下實際端點路徑跟回應格式。
 
 其他部分（資料庫schema、技術指標計算、規則引擎邏輯、AI prompt、專案結構）都是可以直接
 運作的完整邏輯，不是佔位符。

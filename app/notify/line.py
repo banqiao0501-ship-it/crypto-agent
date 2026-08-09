@@ -111,9 +111,11 @@ def sync_to_webhook(sync_url: str, sync_secret: str, payload: dict) -> bool:
         return False
 
     try:
+        # timeout故意設70秒，不是網路慢——是Render免費方案閒置後會休眠，喚醒最多可能要50秒，
+        # 15秒太短了，daily-report本來就一天只跑一次，多等一下沒關係。
         resp = httpx.post(
             f"{sync_url.rstrip('/')}/sync", json=payload,
-            headers={"X-Sync-Secret": sync_secret}, timeout=15,
+            headers={"X-Sync-Secret": sync_secret}, timeout=70,
         )
         resp.raise_for_status()
         logger.info("已同步報告到webhook服務")

@@ -1,20 +1,19 @@
 """
-Market Regime Detection（V2第一塊）。
+Market Regime Detection。
 
-判斷邏輯照之前討論的方向：分別算出Trend / Momentum / Volatility / Volume四個訊號，
-再組合成一個整體市場狀態標籤。這裡刻意只用BTC+ETH（使用者指定），
-不是全部8個幣種——因為Market Regime的用途是描述「大盤氣氛」，
+判斷邏輯：分別算出Trend / Momentum / Volatility / Volume四個訊號，再組合成一個整體市場狀態標籤。
+這裡刻意只用BTC+ETH（使用者指定），不是全部8個幣種——因為Market Regime的用途是描述「大盤氣氛」，
 用市值最大、最能代表整體幣圈情緒的兩個幣就夠了，納入太多小幣反而會稀釋訊號。
 
-五種狀態（沿用之前討論的分類）：
+五種狀態：
 - Bullish Trend：趨勢向上，非高波動
 - Bearish Trend：趨勢向下，非高波動、非恐慌性放量
 - Range：沒有明確趨勢、波動度正常
 - High Volatility：波動度異常放大，但還不到恐慌性下跌
 - Risk-off：下跌+高波動+放量同時出現，最極端的狀態
 
-V1範圍先不用funding rate/OI，只用價格序列（收盤價+成交量）就能算，
-避免對外部依賴太多，之後有需要再把衍生品數據也納入判斷。
+P0改版：資料來源從CoinGecko價格點改成BingX 1h K線（真實OHLCV），邏輯本身沒有變，
+只是把輸入資料結構從(datetime,price,volume) tuple改成Candle物件。
 """
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 from statistics import mean, stdev
 
+from app.analysis.data_quality import Candle
 from app.config import Asset
 from app.database import db
 from app.utils.logger import get_logger
@@ -44,10 +44,10 @@ def _hourly_returns(closes: list[float]) -> list[float]:
     ]
 
 
-def _volatility_signal(hourly_series: list[tuple[datetime, float, float]]) -> tuple[str, float]:
+def _volatility_signal(hourly_candles: list[Candle]) -> tuple[str, float]:
     """比較近48小時的報酬率標準差 vs 再往前30天（不含近48小時）的標準差，回傳(signal, ratio)。
     baseline故意不包含recent窗口，不然一次真正的異常波動會被自己稀釋掉、偵測不出來。"""
-    closes = [p for _, p, _ in hourly_series]
+    closes = [c.close for c in hourly_candles]
     needed = _VOL_BASELINE_HOURS + _VOL_LOOKBACK_HOURS
     if len(closes) < needed // 2:
         return "unknown", 1.0
@@ -75,10 +75,10 @@ def _volatility_signal(hourly_series: list[tuple[datetime, float, float]]) -> tu
     return "normal", ratio
 
 
-def _volume_signal(hourly_series: list[tuple[datetime, float, float]]) -> tuple[str, float]:
+def _volume_signal(hourly_candles: list[Candle]) -> tuple[str, float]:
     """比較近24小時成交量 vs 再往前20天（不含近24小時）的每小時平均成交量，回傳(signal, ratio)。
     同樣故意排除recent窗口，理由跟volatility一樣。"""
-    volumes = [v for _, _, v in hourly_series if v]
+    volumes = [c.volume for c in hourly_candles if c.volume]
     needed = _VOLUME_BASELINE_HOURS + _VOLUME_LOOKBACK_HOURS
     if len(volumes) < needed // 2:
         return "unknown", 1.0
@@ -139,7 +139,7 @@ def classify_regime(
 def compute(
     conn: sqlite3.Connection,
     assets: list[Asset],
-    price_series_by_symbol: dict[str, dict[str, list[tuple[datetime, float, float]]]],
+    klines_by_symbol: dict[str, dict[str, list[Candle]]],
     technical_results: dict[str, dict[str, dict]],
 ) -> dict:
     """主入口：算出目前的Market Regime，存進DB，並回傳結果給AI synthesizer/LINE報告使用。"""
@@ -147,13 +147,11 @@ def compute(
 
     trends: list[str] = []
     rsi_values: list[float] = []
-    volatility_ratios: list[float] = []
-    volume_ratios: list[float] = []
     volatility_signals: list[str] = []
     volume_signals: list[str] = []
 
     for asset in relevant_assets:
-        hourly_series = price_series_by_symbol.get(asset.symbol, {}).get("short", [])
+        hourly_candles = klines_by_symbol.get(asset.symbol, {}).get("1h", [])
         tech_4h = technical_results.get(asset.symbol, {}).get("4h", {})
 
         trend = tech_4h.get("trend", "neutral")
@@ -163,13 +161,11 @@ def compute(
         if rsi is not None:
             rsi_values.append(rsi)
 
-        vol_signal, vol_ratio = _volatility_signal(hourly_series)
+        vol_signal, _ = _volatility_signal(hourly_candles)
         volatility_signals.append(vol_signal)
-        volatility_ratios.append(vol_ratio)
 
-        volu_signal, volu_ratio = _volume_signal(hourly_series)
+        volu_signal, _ = _volume_signal(hourly_candles)
         volume_signals.append(volu_signal)
-        volume_ratios.append(volu_ratio)
 
     combined_trend = _combine_trend(trends)
     combined_momentum = _momentum_signal(mean(rsi_values) if rsi_values else None)

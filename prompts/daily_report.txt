@@ -22,6 +22,13 @@
 - 下面提供的「整體市場狀態」（Market Regime）是程式規則計算出來的客觀結果，不是你自己判斷的，
   請在market_overview裡納入這個大盤狀態，並在解讀個別幣種時考慮這個脈絡
   （例如：大盤是High Volatility時，個別幣種的技術訊號可靠度應該打折扣）。
+- 市場背景資料（Market Cap/排名/流通量）只是額外脈絡，用來幫助你理解這個幣種的市場地位
+  （例如：即使BTC永續合約短線下跌，仍然是市值第一大資產這件事本身可以納入market_overview），
+  不要拿市值資料去做技術判斷或market_bias的依據。
+- 下面的「事件反應追蹤」資料是程式已經算好的deterministic數字（excess_return已經扣除了事件發生前
+  既有的價格趨勢），不是你自己判斷的。你的工作只是「解讀」這些數字代表什麼市場行為，不要重新計算
+  或質疑這些數字本身。如果某個事件的反應很極端（例如24h excess_return是STRONG_NEGATIVE），
+  這是值得在market_overview或該幣種的key_factors裡特別提及的重要脈絡。
 - 你的輸出必須是「純JSON」，不要加markdown的```json框、不要加任何JSON以外的文字或說明。
 
 === 整體市場狀態（Market Regime，程式規則計算，非AI判斷）===
@@ -30,8 +37,14 @@
 === 今天的技術面數據（每個幣種、每個timeframe） ===
 {technical_data}
 
-=== 今天的衍生品數據（Funding Rate / Open Interest）===
+=== 今天的衍生品數據（Funding Rate / Open Interest / Mark Price / Index Price，來自BingX）===
 {derivative_data}
+
+=== 市場背景資料（Market Cap / 排名 / 流通量，來自CoinGecko，僅供脈絡參考，不是技術分析依據）===
+{market_context}
+
+=== 過去24小時的事件反應追蹤（程式deterministic計算，你只負責解讀）===
+{event_reactions}
 
 === 今天的事件（已去重，同一件事只列一次）===
 {raw_contents}

@@ -221,10 +221,12 @@ def collect(conn: sqlite3.Connection, channels: list[YoutubeChannel]) -> tuple[i
                     new_count += 1
                     logger.info("新影片入庫：%s - %s", channel.name, video.title)
                     new_videos.append({
+                        "content_id": inserted,
                         "channel_name": channel.name,
                         "title": video.title,
                         "url": video.url,
                         "transcript": transcript,
+                        "published_at": video.published_at,
                     })
 
     return new_count, new_videos

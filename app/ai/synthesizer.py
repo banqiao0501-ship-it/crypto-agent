@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import anthropic
 
+from app.analysis import event_reactions
 from app.config import Asset, Settings
 from app.database import db
 from app.utils.logger import get_logger
@@ -77,12 +78,34 @@ def _format_derivative_data(conn: sqlite3.Connection, assets: list[Asset]) -> st
         if row is None:
             lines.append(f"{asset.symbol}: 無衍生品數據")
         else:
-            fr = row["funding_rate"]
-            oi = row["open_interest"]
+            fr, oi = row["funding_rate"], row["open_interest"]
+            mark, index = row["mark_price"], row["index_price"]
             lines.append(
                 f"{asset.symbol}: funding_rate={fr if fr is not None else 'N/A'}, "
-                f"open_interest={oi if oi is not None else 'N/A'} (來源:{row['source']})"
+                f"open_interest={oi if oi is not None else 'N/A'}, "
+                f"mark_price={mark if mark is not None else 'N/A'}, "
+                f"index_price={index if index is not None else 'N/A'} (來源:{row['source']})"
             )
+    return "\n".join(lines)
+
+
+def _format_market_context(conn: sqlite3.Connection, assets: list[Asset]) -> str:
+    """CoinGecko的市場背景資料（市值、排名、流通量），純粹是額外脈絡，不是技術分析依據。"""
+    lines = []
+    for asset in assets:
+        asset_id = db.upsert_asset(conn, asset.symbol, asset.coingecko_id, asset.tier)
+        row = db.get_latest_market_context(conn, asset_id)
+        if row is None:
+            lines.append(f"{asset.symbol}: 無市場背景資料")
+            continue
+        cap = row["market_cap_usd"]
+        rank = row["market_cap_rank"]
+        circ = row["circulating_supply"]
+        cap_text = f"${cap/1e9:.1f}B" if cap is not None else "N/A"
+        lines.append(
+            f"{asset.symbol}: Market Cap={cap_text}, Rank=#{rank if rank is not None else 'N/A'}, "
+            f"流通量={circ if circ is not None else 'N/A'}"
+        )
     return "\n".join(lines)
 
 
@@ -187,6 +210,11 @@ def extract_events(
         for content_id in content_ids:
             db.insert_event_source(conn, event_id=event_id, content_id=content_id)
 
+        event_reactions.create_reaction_jobs(
+            conn, event_id=event_id, event_time=datetime.fromisoformat(created_at),
+            related_assets=event.get("related_assets", []), impact=event.get("impact", ""),
+        )
+
     logger.info("事件去重完成：%d筆原始資料 → %d個事件", len(unprocessed_rows), len(events))
     return events
 
@@ -214,6 +242,35 @@ def _format_events_data(events: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _format_event_reactions(conn: sqlite3.Connection) -> str:
+    """把過去24小時內完成的事件反應結算資料，整理給AI「解讀」——AI只負責讀懂這些已經算好的
+    數字代表什麼，不負責重新計算。"""
+    since_iso = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    rows = db.get_recent_event_reactions(conn, since_iso)
+    if not rows:
+        return "（過去24小時沒有事件反應結算資料）"
+
+    by_event: dict[int, list] = {}
+    for row in rows:
+        by_event.setdefault(row["event_id"], []).append(row)
+
+    parts = []
+    for event_id, reactions in by_event.items():
+        title = reactions[0]["event_title"]
+        lines = [f"事件：{title}"]
+        for r in sorted(reactions, key=lambda x: x["window"]):
+            excess = r["excess_return"]
+            excess_text = f"{excess*100:+.2f}%" if excess is not None else "N/A"
+            vol = r["volume_ratio"]
+            vol_text = f"{vol:.1f}x" if vol is not None else "N/A"
+            lines.append(
+                f"  {r['asset']} {r['window']}：excess_return={excess_text}, "
+                f"volume={vol_text}, 分類={r['reaction_type']}"
+            )
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
 def generate_daily_report(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -227,7 +284,9 @@ def generate_daily_report(
     prompt = template.format(
         technical_data=_format_technical_data(technical_results),
         derivative_data=_format_derivative_data(conn, settings.assets),
+        market_context=_format_market_context(conn, settings.assets),
         regime_data=_format_regime_data(regime_result),
+        event_reactions=_format_event_reactions(conn),
         raw_contents=_format_events_data(events),
     )
 
@@ -250,25 +309,112 @@ def generate_daily_report(
 _YOUTUBE_TRANSCRIPT_MAX_CHARS = 8000  # 即時摘要用，比日報的_MAX_CONTENT_CHARS更小，讓即時推播更快回來
 
 
-def summarize_youtube_video(settings: Settings, title: str, transcript: str) -> list[str]:
-    """對單一支新影片做即時摘要，回傳幾條重點（不做事件去重、不管其他來源，就是單支影片的重點整理）。
-    給YouTube collector偵測到新影片時即時推播用，跟每日報告的彙整邏輯是分開的兩件事。"""
+_HORIZON_DAYS = {"short_term": 3, "mid_term": 14, "long_term": 60}
+
+
+def _select_atr_timeframe(horizon_days: int) -> str:
+    """依照predict的時間長度選擇要用哪個timeframe的ATR當基準——短天期預測用短timeframe的波動度，
+    長天期預測用長timeframe的波動度，比全部都用同一個timeframe合理（跟使用者定案的V1設計一致）。"""
+    return "4h" if horizon_days <= 3 else "1d"
+
+
+def _get_reference_and_atr(conn: sqlite3.Connection, asset_id: int, horizon_days: int) -> dict:
+    """在prediction建立當下，把「現在的價格」跟「現在的ATR」凍結下來，之後結算永遠用這組數字，
+    不會因為之後ATR變了就跟著變——這是避免look-ahead bias的關鍵。"""
+    timeframe = _select_atr_timeframe(horizon_days)
+    tech_snapshot = db.get_latest_technical(conn, asset_id, timeframe)
+    price_snapshot = db.get_market_snapshot_near(
+        conn, asset_id, timeframe, datetime.now(timezone.utc).isoformat(),
+    )
+
+    if tech_snapshot is None or tech_snapshot["atr"] is None or price_snapshot is None:
+        return {
+            "reference_price": None, "atr_value": None, "atr_percent": None,
+            "atr_timeframe": timeframe, "threshold": None,
+        }
+
+    reference_price = price_snapshot["close"]
+    atr_value = tech_snapshot["atr"]
+    atr_percent = atr_value / reference_price if reference_price else None
+    return {
+        "reference_price": reference_price, "atr_value": atr_value,
+        "atr_percent": atr_percent, "atr_timeframe": timeframe, "threshold": atr_percent,
+    }
+
+
+def _safe_parse_iso(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return datetime.now(timezone.utc)
+
+
+def extract_youtube_claims(
+    conn: sqlite3.Connection, settings: Settings, *,
+    content_id: int, source_name: str, title: str, transcript: str, published_at: str,
+) -> list[str]:
+    """對單一支新影片做結構化claim抽取（P2-1）。
+
+    回傳bullets給即時LINE推播用；claims全部存進kol_claims（給Daily Report/敘事追蹤參考）；
+    其中verifiable=true且time_horizon有明確值的，另外存一筆進kol_predictions，
+    等P2-2的評估引擎（還沒做）到期時去BingX撈價格結算。
+    """
     content = transcript
     if len(content) > _YOUTUBE_TRANSCRIPT_MAX_CHARS:
         content = content[:_YOUTUBE_TRANSCRIPT_MAX_CHARS] + "...(內容過長，已截斷)"
 
-    template = _load_prompt_template("youtube_summary.txt")
+    template = _load_prompt_template("youtube_claims.txt")
     prompt = template.format(title=title, transcript=content)
 
-    logger.info("呼叫Claude即時摘要新影片：%s", title)
-    raw_response = _call_claude(settings.anthropic_api_key, prompt, max_tokens=1500)
+    logger.info("呼叫Claude做結構化claim抽取：%s", title)
+    raw_response = _call_claude(settings.anthropic_api_key, prompt, max_tokens=16000)
 
     try:
         parsed = _parse_json_response(raw_response)
     except json.JSONDecodeError as exc:
-        debug_path = _save_debug_response(raw_response, "youtube_summary")
-        logger.error("影片摘要AI回應無法解析成JSON：%s\n完整原始回應已存到：%s", exc, debug_path)
+        debug_path = _save_debug_response(raw_response, "youtube_claims")
+        logger.error("Claim抽取AI回應無法解析成JSON：%s\n完整原始回應已存到：%s", exc, debug_path)
         raise
+
+    created_at = published_at.strip() if published_at else datetime.now(timezone.utc).isoformat()
+    prediction_time = _safe_parse_iso(created_at)
+
+    for claim in parsed.get("claims", []):
+        conditions = claim.get("conditions") or {}
+        claim_id = db.insert_kol_claim(
+            conn,
+            content_id=content_id, source_name=source_name,
+            asset=claim.get("asset", ""), claim_type=claim.get("claim_type", ""),
+            direction=claim.get("direction", ""), time_horizon=claim.get("time_horizon", "unspecified"),
+            claim_text=claim.get("claim_text", ""), confidence=claim.get("confidence", ""),
+            entry_zone_low=conditions.get("entry_zone_low"), entry_zone_high=conditions.get("entry_zone_high"),
+            invalidation_price=conditions.get("invalidation"), target_price=conditions.get("target"),
+            verifiable=bool(claim.get("verifiable")), unverifiable_reason=claim.get("unverifiable_reason", ""),
+            source_timestamp=claim.get("source_timestamp", ""), created_at=created_at,
+        )
+
+        horizon = claim.get("time_horizon")
+        if claim.get("verifiable") and horizon in _HORIZON_DAYS:
+            horizon_days = _HORIZON_DAYS[horizon]
+            deadline = prediction_time + timedelta(days=horizon_days)
+
+            asset_symbol = claim.get("asset", "")
+            asset_cfg = next((a for a in settings.assets if a.symbol == asset_symbol), None)
+            atr_info = {
+                "reference_price": None, "atr_value": None, "atr_percent": None,
+                "atr_timeframe": None, "threshold": None,
+            }
+            if asset_cfg is not None:
+                asset_id = db.upsert_asset(conn, asset_cfg.symbol, asset_cfg.coingecko_id, asset_cfg.tier)
+                atr_info = _get_reference_and_atr(conn, asset_id, horizon_days)
+
+            db.insert_kol_prediction(
+                conn, claim_id=claim_id, asset=asset_symbol, direction=claim.get("direction", ""),
+                target_price=conditions.get("target"), invalidation_price=conditions.get("invalidation"),
+                entry_zone_low=conditions.get("entry_zone_low"), entry_zone_high=conditions.get("entry_zone_high"),
+                prediction_time=prediction_time.isoformat(), horizon_days=horizon_days,
+                deadline=deadline.isoformat(), **atr_info,
+            )
 
     return parsed.get("bullets", [])
 
